@@ -118,12 +118,13 @@ final class InlayHintTests: SourceKitLSPTestCase {
   private func runInlayHintTestCase(
     initialText: String,
     range: (start: String, end: String)? = nil,
+    hooks: Hooks = Hooks(),
     testBody: (InlayHintTestCaseContext) async throws -> Void
   ) async throws {
     let capabilities = ClientCapabilities(
       workspace: WorkspaceClientCapabilities(inlayHint: RefreshRegistrationCapability(refreshSupport: true))
     )
-    let testClient = try await TestSourceKitLSPClient(capabilities: capabilities)
+    let testClient = try await TestSourceKitLSPClient(hooks: hooks, capabilities: capabilities)
     let uri = DocumentURI(for: .swift)
 
     let positions = testClient.openDocument(initialText, uri: uri)
@@ -575,18 +576,31 @@ final class InlayHintTests: SourceKitLSPTestCase {
   }
 
   func testInlayHintShiftingWorks() async throws {
+    let shouldGateBackgroundRefresh = ThreadSafeBox<Bool>(initialValue: false)
+    let backgroundRefreshMayProceed = MultiEntrySemaphore(name: "Inlay hint background refresh may proceed")
+    var hooks = Hooks()
+    hooks.inlayHintRefreshWillUpdateCache = {
+      // Gate the background refresh so it can't race ahead of the read below, which asserts on the synchronously
+      // shift-computed hints rather than a background recompute.
+      if shouldGateBackgroundRefresh.value {
+        await backgroundRefreshMayProceed.waitOrXCTFail()
+      }
+    }
+
     try await runInlayHintTestCase(
       initialText: """
         let y1️⃣ = 2
         2️⃣
         let x3️⃣ = 4
         """,
+      hooks: hooks
     ) { context in
       try await context.checkInlayHintsComputedInTheBackgroundMatch(expected: [
         makeInlayHint(position: context.positions["1️⃣"], kind: .type, label: ": Int"),
         makeInlayHint(position: context.positions["3️⃣"], kind: .type, label: ": Int"),
       ])
 
+      shouldGateBackgroundRefresh.withLock { $0 = true }
       context.sendChange(
         range: context.positions["2️⃣"]..<context.positions["2️⃣"],
         text: """
@@ -605,6 +619,8 @@ final class InlayHintTests: SourceKitLSPTestCase {
       ).positions
 
       let shiftedHints = try await context.getCachedInlayHints()
+      backgroundRefreshMayProceed.signal()
+
       assertHintsEqual(
         shiftedHints,
         [
@@ -616,12 +632,22 @@ final class InlayHintTests: SourceKitLSPTestCase {
   }
 
   func testInlayHintShiftingRemovesHintsInsideDeletedRegion() async throws {
+    let shouldGateBackgroundRefresh = ThreadSafeBox<Bool>(initialValue: false)
+    let backgroundRefreshMayProceed = MultiEntrySemaphore(name: "Inlay hint background refresh may proceed")
+    var hooks = Hooks()
+    hooks.inlayHintRefreshWillUpdateCache = {
+      if shouldGateBackgroundRefresh.value {
+        await backgroundRefreshMayProceed.waitOrXCTFail()
+      }
+    }
+
     try await runInlayHintTestCase(
       initialText: """
         let x1️⃣ = 1
         2️⃣let y3️⃣ = 24️⃣
         let z5️⃣ = ""
         """,
+      hooks: hooks
     ) { context in
       try await context.checkInlayHintsComputedInTheBackgroundMatch(expected: [
         makeInlayHint(position: context.positions["1️⃣"], kind: .type, label: ": Int"),
@@ -629,6 +655,7 @@ final class InlayHintTests: SourceKitLSPTestCase {
         makeInlayHint(position: context.positions["5️⃣"], kind: .type, label: ": String"),
       ])
 
+      shouldGateBackgroundRefresh.withLock { $0 = true }
       context.sendChange(
         range: context.positions["2️⃣"]..<context.positions["4️⃣"],
         text: ""
@@ -643,6 +670,8 @@ final class InlayHintTests: SourceKitLSPTestCase {
       ).positions
 
       let shiftedHints = try await context.getCachedInlayHints()
+      backgroundRefreshMayProceed.signal()
+
       assertHintsEqual(
         shiftedHints,
         [
@@ -654,15 +683,26 @@ final class InlayHintTests: SourceKitLSPTestCase {
   }
 
   func testInlayHintShiftingWithInsertionDirectlyBeforeAHint() async throws {
+    let shouldGateBackgroundRefresh = ThreadSafeBox<Bool>(initialValue: false)
+    let backgroundRefreshMayProceed = MultiEntrySemaphore(name: "Inlay hint background refresh may proceed")
+    var hooks = Hooks()
+    hooks.inlayHintRefreshWillUpdateCache = {
+      if shouldGateBackgroundRefresh.value {
+        await backgroundRefreshMayProceed.waitOrXCTFail()
+      }
+    }
+
     try await runInlayHintTestCase(
       initialText: """
         let x1️⃣ = 1
         """,
+      hooks: hooks
     ) { context in
       try await context.checkInlayHintsComputedInTheBackgroundMatch(expected: [
         makeInlayHint(position: context.positions["1️⃣"], kind: .type, label: ": Int")
       ])
 
+      shouldGateBackgroundRefresh.withLock { $0 = true }
       context.sendChange(
         range: context.positions["1️⃣"]..<context.positions["1️⃣"],
         text: "yz"
@@ -675,6 +715,8 @@ final class InlayHintTests: SourceKitLSPTestCase {
       ).positions
 
       let shiftedHints = try await context.getCachedInlayHints()
+      backgroundRefreshMayProceed.signal()
+
       assertHintsEqual(
         shiftedHints,
         [
@@ -685,16 +727,27 @@ final class InlayHintTests: SourceKitLSPTestCase {
   }
 
   func testInlayHintShiftingWithMultiCodePointInsertion() async throws {
+    let shouldGateBackgroundRefresh = ThreadSafeBox<Bool>(initialValue: false)
+    let backgroundRefreshMayProceed = MultiEntrySemaphore(name: "Inlay hint background refresh may proceed")
+    var hooks = Hooks()
+    hooks.inlayHintRefreshWillUpdateCache = {
+      if shouldGateBackgroundRefresh.value {
+        await backgroundRefreshMayProceed.waitOrXCTFail()
+      }
+    }
+
     try await runInlayHintTestCase(
       initialText: """
         1️⃣let x2️⃣ = 1
         """,
+      hooks: hooks
     ) { context in
       try await context.checkInlayHintsComputedInTheBackgroundMatch(expected: [
         makeInlayHint(position: context.positions["2️⃣"], kind: .type, label: ": Int")
       ]
       )
 
+      shouldGateBackgroundRefresh.withLock { $0 = true }
       let inserted = "👨‍💻"
       context.sendChange(
         range: context.positions["1️⃣"]..<context.positions["1️⃣"],
@@ -708,6 +761,8 @@ final class InlayHintTests: SourceKitLSPTestCase {
       ).positions
 
       let shiftedHints = try await context.getCachedInlayHints()
+      backgroundRefreshMayProceed.signal()
+
       assertHintsEqual(
         shiftedHints,
         [
@@ -718,15 +773,29 @@ final class InlayHintTests: SourceKitLSPTestCase {
   }
 
   func testInlayHintShiftingWithMultiCodePointAndNewlineInsertionDirectlyBeforeAHint() async throws {
+    let shouldGateBackgroundRefresh = ThreadSafeBox<Bool>(initialValue: false)
+    let backgroundRefreshMayProceed = MultiEntrySemaphore(name: "Inlay hint background refresh may proceed")
+    var hooks = Hooks()
+    hooks.inlayHintRefreshWillUpdateCache = {
+      // This edit briefly makes the buffer syntactically invalid (`let xabc` / `👨‍💻 = 1` on two lines), so sourcekitd's
+      // background recompute returns no hints for it. `shouldGateBackgroundRefresh` keeps that background write from
+      // racing ahead of the read below, which asserts on the synchronously shift-computed guess instead.
+      if shouldGateBackgroundRefresh.value {
+        await backgroundRefreshMayProceed.waitOrXCTFail()
+      }
+    }
+
     try await runInlayHintTestCase(
       initialText: """
         let x1️⃣ = 1
         """,
+      hooks: hooks
     ) { context in
       try await context.checkInlayHintsComputedInTheBackgroundMatch(expected: [
         makeInlayHint(position: context.positions["1️⃣"], kind: .type, label: ": Int")
       ])
 
+      shouldGateBackgroundRefresh.withLock { $0 = true }
       context.sendChange(
         range: context.positions["1️⃣"]..<context.positions["1️⃣"],
         text: "abc\n👨‍💻"
@@ -740,6 +809,8 @@ final class InlayHintTests: SourceKitLSPTestCase {
       ).positions
 
       let shiftedHints = try await context.getCachedInlayHints()
+      backgroundRefreshMayProceed.signal()
+
       assertHintsEqual(
         shiftedHints,
         [
@@ -750,6 +821,15 @@ final class InlayHintTests: SourceKitLSPTestCase {
   }
 
   func testInlayHintShiftingWithMultipleChanges() async throws {
+    let shouldGateBackgroundRefresh = ThreadSafeBox<Bool>(initialValue: false)
+    let backgroundRefreshMayProceed = MultiEntrySemaphore(name: "Inlay hint background refresh may proceed")
+    var hooks = Hooks()
+    hooks.inlayHintRefreshWillUpdateCache = {
+      if shouldGateBackgroundRefresh.value {
+        await backgroundRefreshMayProceed.waitOrXCTFail()
+      }
+    }
+
     try await runInlayHintTestCase(
       initialText: """
         4️⃣let x1️⃣ = 1
@@ -757,6 +837,7 @@ final class InlayHintTests: SourceKitLSPTestCase {
 
         let z3️⃣ = ""
         """,
+      hooks: hooks
     ) { context in
       try await context.checkInlayHintsComputedInTheBackgroundMatch(expected: [
         makeInlayHint(position: context.positions["1️⃣"], kind: .type, label: ": Int"),
@@ -764,6 +845,7 @@ final class InlayHintTests: SourceKitLSPTestCase {
         makeInlayHint(position: context.positions["3️⃣"], kind: .type, label: ": String"),
       ])
 
+      shouldGateBackgroundRefresh.withLock { $0 = true }
       context.sendChanges(changes: [
         (range: context.positions["4️⃣"]..<context.positions["4️⃣"], text: "let abc = 5\n"),
         (range: Position(line: 2, utf16index: 0)..<Position(line: 3, utf16index: 0), text: ""),
@@ -781,6 +863,8 @@ final class InlayHintTests: SourceKitLSPTestCase {
       ).positions
 
       let shiftedHints = try await context.getCachedInlayHints()
+      backgroundRefreshMayProceed.signal()
+
       assertHintsEqual(
         shiftedHints,
         [

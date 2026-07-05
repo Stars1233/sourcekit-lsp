@@ -159,7 +159,7 @@ package actor SwiftLanguageService: LanguageService, Sendable {
   ///   might have finished. This isn't an issue since the tasks do not retain `self`.
   private var inFlightPublishDiagnosticsTasks: [DocumentURI: Task<Void, Never>] = [:]
 
-  let inlayHintManager = InlayHintManager()
+  let inlayHintManager: InlayHintManager
 
   let syntaxTreeManager = SyntaxTreeManager()
 
@@ -260,6 +260,7 @@ package actor SwiftLanguageService: LanguageService, Sendable {
     self.capabilityRegistry = workspace.capabilityRegistry
     self.semanticIndexManagerTask = workspace.semanticIndexManagerTask
     self.hooks = hooks
+    self.inlayHintManager = InlayHintManager(hooks: hooks)
     self.state = .connected
     self.options = options
 
