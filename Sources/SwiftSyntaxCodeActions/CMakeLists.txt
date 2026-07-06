@@ -14,6 +14,7 @@ add_library(SwiftSyntaxCodeActions STATIC
   ConvertZeroParameterFunctionToComputedProperty.swift
   DeclModifierRemover.swift
   FormatRawStringLiteral.swift
+  GenerateEnumCaseAccessors.swift
   IndentationRemover.swift
   IntegerLiteralUtilities.swift
   MigrateToNewIfLetSyntax.swift
