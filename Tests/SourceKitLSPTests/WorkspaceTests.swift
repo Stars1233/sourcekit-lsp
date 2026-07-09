@@ -1139,7 +1139,7 @@ final class WorkspaceTests: SourceKitLSPTestCase {
           }
           do {
             XCTAssert(
-              task.targetsToPrepare.contains(try BuildTargetIdentifier(target: "LibB", destination: .target)),
+              task.targetsToPrepare.contains(where: { $0.matchesTargetName("LibB") }),
               "Prepared unexpected targets: \(task.targetsToPrepare)"
             )
             try await repeatUntilExpectedResult {
@@ -1384,9 +1384,13 @@ final class WorkspaceTests: SourceKitLSPTestCase {
       enableBackgroundIndexing: true
     )
 
+    let fileAUri = try project.uri(for: "FileA.swift")
+    let workspace = try await unwrap(project.testClient.server.workspaceForDocument(uri: fileAUri))
+    let target = try await unwrap(workspace.buildServerManager.canonicalTarget(for: fileAUri))
+
     let outputPaths = try await project.testClient.send(
       OutputPathsRequest(
-        target: BuildTargetIdentifier(target: "MyLibrary", destination: .target).uri,
+        target: target.uri,
         workspace: DocumentURI(project.scratchDirectory)
       )
     )

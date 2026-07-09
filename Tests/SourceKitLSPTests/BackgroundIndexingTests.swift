@@ -529,11 +529,11 @@ final class BackgroundIndexingTests: SourceKitLSPTestCase {
     var testHooks = Hooks()
     let expectedPreparationTracker = ExpectedIndexTaskTracker(expectedPreparations: [
       [
-        try ExpectedPreparation(target: "LibA", destination: .target),
-        try ExpectedPreparation(target: "LibB", destination: .target),
+        try ExpectedPreparation(targetName: "LibA"),
+        try ExpectedPreparation(targetName: "LibB"),
       ],
       [
-        try ExpectedPreparation(target: "LibB", destination: .target)
+        try ExpectedPreparation(targetName: "LibB")
       ],
     ])
     testHooks.indexHooks = expectedPreparationTracker.testHooks
@@ -628,16 +628,15 @@ final class BackgroundIndexingTests: SourceKitLSPTestCase {
     let expectedPreparationTracker = ExpectedIndexTaskTracker(expectedPreparations: [
       // Preparation of targets during the initial of the target
       [
-        try ExpectedPreparation(target: "LibA", destination: .target),
-        try ExpectedPreparation(target: "LibB", destination: .target),
-        try ExpectedPreparation(target: "LibC", destination: .target),
-        try ExpectedPreparation(target: "LibD", destination: .target),
+        try ExpectedPreparation(targetName: "LibA"),
+        try ExpectedPreparation(targetName: "LibB"),
+        try ExpectedPreparation(targetName: "LibC"),
+        try ExpectedPreparation(targetName: "LibD"),
       ],
       // LibB's preparation has already started by the time we browse through the other files, so we finish its preparation
       [
         try ExpectedPreparation(
-          target: "LibB",
-          destination: .target,
+          targetName: "LibB",
           didStart: { libBStartedPreparation.signal() },
           didFinish: { allDocumentsOpened.waitOrXCTFail() }
         )
@@ -645,8 +644,7 @@ final class BackgroundIndexingTests: SourceKitLSPTestCase {
       // And now we just want to prepare LibD, and not LibC
       [
         try ExpectedPreparation(
-          target: "LibD",
-          destination: .target,
+          targetName: "LibD",
           didFinish: { libDPreparedForEditing.signal() }
         )
       ],
@@ -2659,13 +2657,13 @@ final class BackgroundIndexingTests: SourceKitLSPTestCase {
     // in a non-deterministic order (due to the way ). If LibB's priority gets elevated before LibA's, then LibB will
     // get prepared first, which is contrary to the background behavior we want to check here.
     try await fulfillmentOfOrThrow(twoPreparationRequestsReceived)
-    XCTAssertEqual(
-      preparationRequests.value.flatMap(\.targets),
-      [
-        try BuildTargetIdentifier(target: "LibA", destination: .target),
-        try BuildTargetIdentifier(target: "LibB", destination: .target),
-      ]
-    )
+    let preparedTargets = preparationRequests.value.flatMap(\.targets)
+    guard preparedTargets.count == 2 else {
+      XCTFail("expected 2 prepared targets, but got: \(preparedTargets)")
+      return
+    }
+    XCTAssert(preparedTargets[0].matchesTargetName("LibA"))
+    XCTAssert(preparedTargets[1].matchesTargetName("LibB"))
     withExtendedLifetime(project) {}
   }
 
