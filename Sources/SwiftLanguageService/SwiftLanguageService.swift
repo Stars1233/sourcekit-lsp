@@ -959,7 +959,6 @@ extension SwiftLanguageService {
       (retrieveSyntaxCodeActions, nil),
       (retrieveRefactorCodeActions, .refactor),
       (retrieveQuickFixCodeActions, .quickFix),
-      (retrieveAddMissingImportCodeActions, .quickFix),
       (retrieveRemoveUnusedImportsCodeAction, .sourceOrganizeImports),
     ]
     let wantedActionKinds = req.context.only
@@ -1050,9 +1049,15 @@ extension SwiftLanguageService {
   func retrieveQuickFixCodeActions(_ params: CodeActionRequest) async throws -> [CodeAction] {
     let snapshot = try await self.latestSnapshot(for: params.textDocument.uri)
     let buildSettings = await self.compileCommand(for: params.textDocument.uri, fallbackAfterTimeout: true)
-    let diagnosticReport = try await self.diagnosticReportManager.diagnosticReport(
+    var diagnosticReport = try await self.diagnosticReportManager.diagnosticReport(
       for: snapshot,
       buildSettings: buildSettings
+    )
+
+    diagnosticReport = try await self.diagnosticReportWithMissingImportCodeActions(
+      diagnosticReport,
+      for: snapshot,
+      document: params.textDocument.uri
     )
 
     let codeActions = diagnosticReport.items.flatMap { (diag) -> [CodeAction] in

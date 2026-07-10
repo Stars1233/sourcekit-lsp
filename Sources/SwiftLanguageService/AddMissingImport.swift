@@ -14,78 +14,32 @@ import Foundation
 @preconcurrency import IndexStoreDB
 @_spi(SourceKitLSP) import LanguageServerProtocol
 import SemanticIndex
-import SourceKitD
 import SourceKitLSP
 import SwiftSyntax
 
 import struct SourceKitLSP.Diagnostic
 
-private let missingImportDiagnosticIDs: Set<String> = [
-  "cannot_find_type_in_scope",
-  "cannot_find_in_scope",
-  "use_of_unresolved_identifier",
+private let missingImportDiagnosticMessagePrefixes = [
+  "Cannot find type '",
+  "Cannot find '",
+  "Use of unresolved identifier '",
 ]
 
 extension SwiftLanguageService {
-  func retrieveAddMissingImportCodeActions(_ request: CodeActionRequest) async throws -> [CodeAction] {
-    let snapshot = try await self.latestSnapshot(for: request.textDocument.uri)
-
-    guard let compileCommand = await self.compileCommand(
-      for: request.textDocument.uri,
-      fallbackAfterTimeout: true
-    ) else {
-      return []
-    }
-
-    let diagnosticResponse = try await self.send(
-      sourcekitdRequest: \.diagnostics,
-      sourcekitd.dictionary([
-        keys.sourceFile: snapshot.uri.pseudoPath,
-        keys.compilerArgs: compileCommand.compilerArgs as [any SKDRequestValue],
-      ]),
-      snapshot: snapshot
-    )
-
-    guard let diagnostics = diagnosticResponse[keys.diagnostics] as SKDResponseArray? else {
-      return []
-    }
-
-    let documentManager = try self.documentManager
+  func diagnosticReportWithMissingImportCodeActions(
+    _ diagnosticReport: RelatedFullDocumentDiagnosticReport,
+    for snapshot: DocumentSnapshot,
+    document: DocumentURI
+  ) async throws -> RelatedFullDocumentDiagnosticReport {
     let syntaxTree = await syntaxTreeManager.syntaxTree(for: snapshot)
     let existingImports = syntaxTree.statements.compactMap { $0.item.as(ImportDeclSyntax.self) }
 
-    var missingImportDiagnostics: [(diagnostic: Diagnostic, missingSymbol: String)] = []
+    var result = diagnosticReport
 
-    diagnostics.forEach { _, rawDiagnostic in
+    for index in result.items.indices {
       guard
-        let diagnosticID: String = rawDiagnostic[keys.id],
-        missingImportDiagnosticIDs.contains(diagnosticID),
-        let diagnostic = Diagnostic(
-          rawDiagnostic,
-          in: snapshot,
-          documentManager: documentManager,
-          useEducationalNoteAsCode: false
-        ),
-        request.range.overlapsIncludingEmptyRanges(other: diagnostic.range),
-        let missingSymbol = missingSymbolName(from: diagnostic.message)
-      else {
-        return true
-      }
-
-      missingImportDiagnostics.append((diagnostic, missingSymbol))
-      return true
-    }
-
-    var result: [CodeAction] = []
-    var suggestedModuleNames = Set<String>()
-
-    for (diagnostic, missingSymbol) in missingImportDiagnostics {
-      guard
-        let moduleName = try? await self.uniqueModuleProvidingSymbol(
-          named: missingSymbol,
-          for: request.textDocument.uri
-        ),
-        !suggestedModuleNames.contains(moduleName),
+        let missingSymbol = missingSymbolName(from: result.items[index]),
+        let moduleName = try? await self.uniqueModuleProvidingSymbol(named: missingSymbol, for: document),
         !existingImports.imports(moduleName),
         let edit = addImportEdit(
           moduleName,
@@ -97,16 +51,14 @@ extension SwiftLanguageService {
         continue
       }
 
-      suggestedModuleNames.insert(moduleName)
-
-      result.append(
-        CodeAction(
-          title: "Add import \(moduleName)",
-          kind: .quickFix,
-          diagnostics: [diagnostic],
-          edit: WorkspaceEdit(changes: [snapshot.uri: [edit]])
-        )
+      let codeAction = CodeAction(
+        title: "Add import \(moduleName)",
+        kind: .quickFix,
+        diagnostics: nil,
+        edit: WorkspaceEdit(changes: [snapshot.uri: [edit]])
       )
+
+      result.items[index].codeActions = (result.items[index].codeActions ?? []) + [codeAction]
     }
 
     return result
@@ -129,9 +81,12 @@ extension SwiftLanguageService {
         return true
       }
 
-      if let moduleName = try? index.containerNames(of: occurrence).first {
-        moduleNames.insert(moduleName)
+      let moduleName = occurrence.location.moduleName
+      guard !moduleName.isEmpty else {
+        return true
       }
+
+      moduleNames.insert(moduleName)
 
       return moduleNames.count <= 1
     }
@@ -144,12 +99,26 @@ extension SwiftLanguageService {
   }
 }
 
-private func missingSymbolName(from diagnosticMessage: String) -> String? {
-  let components = diagnosticMessage.split(separator: "'", omittingEmptySubsequences: false)
-  guard components.count >= 3 else {
+private func missingSymbolName(from diagnostic: Diagnostic) -> String? {
+  guard diagnostic.source == "SourceKit" else {
     return nil
   }
-  return String(components[1])
+
+  for prefix in missingImportDiagnosticMessagePrefixes {
+    guard diagnostic.message.hasPrefix(prefix) else {
+      continue
+    }
+
+    let remainingMessage = diagnostic.message.dropFirst(prefix.count)
+    guard let closingQuoteIndex = remainingMessage.firstIndex(of: "'") else {
+      return nil
+    }
+
+    let symbolName = String(remainingMessage[..<closingQuoteIndex])
+    return symbolName.isEmpty ? nil : symbolName
+  }
+
+  return nil
 }
 
 private func addImportEdit(
@@ -187,21 +156,6 @@ private extension Array where Element == ImportDeclSyntax {
         || text == "@testable import \(moduleName)"
         || text.hasPrefix("import \(moduleName).")
         || text.hasPrefix("@testable import \(moduleName).")
-    }
-  }
-}
-
-private extension Range where Bound == Position {
-  func overlapsIncludingEmptyRanges(other: Range<Position>) -> Bool {
-    switch (self.isEmpty, other.isEmpty) {
-    case (true, true):
-      return self.lowerBound == other.lowerBound
-    case (true, false):
-      return other.contains(self.lowerBound)
-    case (false, true):
-      return self.contains(other.lowerBound)
-    case (false, false):
-      return self.overlaps(other)
     }
   }
 }
