@@ -1952,17 +1952,29 @@ final class CodeActionTests: SourceKitLSPTestCase {
 
     let (uri, positions) = try project.openDocument("main.swift")
 
+    let diagnosticReport = try await project.testClient.send(
+      DocumentDiagnosticsRequest(textDocument: TextDocumentIdentifier(uri))
+    )
+
+    let diagnostics = try XCTUnwrap(diagnosticReport.fullReport?.items)
+
     let result = try await project.testClient.send(
         CodeActionRequest(
             range: Range(positions["1️⃣"]),
-            context: CodeActionContext(),
+            context: CodeActionContext(
+                diagnostics: diagnostics,
+                only: [.quickFix],
+                triggerKind: .invoked
+            ),
             textDocument: TextDocumentIdentifier(uri)
         )
     )
 
     let codeActions = try XCTUnwrap(result?.codeActions)
+    let actionTitles = codeActions.map(\.title)
     let addImportAction = try XCTUnwrap(
-        codeActions.first { $0.title == "Add import MyLibrary" }
+      codeActions.first { $0.title == "Add import MyLibrary" },
+      "Expected Add import MyLibrary action. Available actions: \(actionTitles). Diagnostics: \(diagnostics.map { "\($0.source ?? "nil"): \($0.message)" })"
     )
 
     XCTAssertEqual(addImportAction.kind, .quickFix)
@@ -2010,10 +2022,20 @@ final class CodeActionTests: SourceKitLSPTestCase {
 
     let (uri, positions) = try project.openDocument("main.swift")
 
+    let diagnosticReport = try await project.testClient.send(
+      DocumentDiagnosticsRequest(textDocument: TextDocumentIdentifier(uri))
+    )
+
+    let diagnostics = try XCTUnwrap(diagnosticReport.fullReport?.items)
+
     let result = try await project.testClient.send(
     CodeActionRequest(
         range: Range(positions["1️⃣"]),
-        context: CodeActionContext(),
+        context: CodeActionContext(
+            diagnostics: diagnostics,
+            only: [.quickFix],
+            triggerKind: .invoked
+        ),
         textDocument: TextDocumentIdentifier(uri)
     )
     )
