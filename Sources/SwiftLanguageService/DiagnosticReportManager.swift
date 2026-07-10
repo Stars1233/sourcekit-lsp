@@ -21,6 +21,9 @@ import SwiftDiagnostics
 import SwiftExtensions
 import SwiftParserDiagnostics
 @_spi(SourceKitLSP) import ToolsProtocolsSwiftExtensions
+@preconcurrency import IndexStoreDB
+import SemanticIndex
+import SwiftSyntax
 
 import struct SourceKitLSP.Diagnostic
 
@@ -40,6 +43,7 @@ actor DiagnosticReportManager {
   private let syntaxTreeManager: SyntaxTreeManager
   private let documentManager: DocumentManager
   private let clientHasDiagnosticsCodeDescriptionSupport: Bool
+  private let uncheckedIndex: UncheckedIndex?
 
   private nonisolated var keys: sourcekitd_api_keys { return sourcekitd.keys }
   private nonisolated var requests: sourcekitd_api_requests { return sourcekitd.requests }
@@ -54,13 +58,15 @@ actor DiagnosticReportManager {
     options: SourceKitLSPOptions,
     syntaxTreeManager: SyntaxTreeManager,
     documentManager: DocumentManager,
-    clientHasDiagnosticsCodeDescriptionSupport: Bool
+    clientHasDiagnosticsCodeDescriptionSupport: Bool,
+    uncheckedIndex: UncheckedIndex?
   ) {
     self.sourcekitd = sourcekitd
     self.options = options
     self.syntaxTreeManager = syntaxTreeManager
     self.documentManager = documentManager
     self.clientHasDiagnosticsCodeDescriptionSupport = clientHasDiagnosticsCodeDescriptionSupport
+    self.uncheckedIndex = uncheckedIndex
   }
 
   func diagnosticReport(
@@ -149,15 +155,58 @@ actor DiagnosticReportManager {
 
     try Task.checkCancellation()
 
-    let diagnostics: [Diagnostic] =
-      dict[keys.diagnostics]?.compactMap({ diag in
-        Diagnostic(
-          diag,
-          in: snapshot,
-          documentManager: documentManager,
-          useEducationalNoteAsCode: self.clientHasDiagnosticsCodeDescriptionSupport
+    let rawDiagnostics: SKDResponseArray? = dict[keys.diagnostics]
+
+    let hasMissingImportDiagnostic =
+      rawDiagnostics?.compactMap { rawDiagnostic -> String? in
+      guard
+        let diagnosticID: String = rawDiagnostic[keys.id],
+        isMissingImportDiagnosticID(diagnosticID)
+      else {
+        return nil
+      }
+
+      return diagnosticID
+    }.isEmpty == false
+
+    let missingImportContext: MissingImportCodeActionContext?
+    if hasMissingImportDiagnostic, let uncheckedIndex {
+      let syntaxTree = await syntaxTreeManager.syntaxTree(for: snapshot)
+        missingImportContext = MissingImportCodeActionContext(
+            index: uncheckedIndex.checked(for: .deletedFiles),
+            existingImports: syntaxTree.statements.compactMap { $0.item.as(ImportDeclSyntax.self) }
         )
-      }) ?? []
+    } else {
+        missingImportContext = nil
+    }
+
+    let diagnostics: [Diagnostic] =
+      rawDiagnostics?.compactMap { rawDiagnostic in
+      guard var diagnostic = Diagnostic(
+        rawDiagnostic,
+        in: snapshot,
+        documentManager: documentManager,
+        useEducationalNoteAsCode: self.clientHasDiagnosticsCodeDescriptionSupport
+      ) else {
+        return nil
+      }
+
+      if let diagnosticID: String = rawDiagnostic[keys.id],
+        isMissingImportDiagnosticID(diagnosticID),
+        let diagnosticDescription: String = rawDiagnostic[keys.description],
+        let missingSymbol = missingSymbolName(from: diagnosticDescription),
+        let missingImportContext,
+        let codeAction = try? missingImportCodeAction(
+          for: missingSymbol,
+          context: missingImportContext,
+          snapshot: snapshot
+        )
+      {
+        diagnostic.codeActions = (diagnostic.codeActions ?? []) + [codeAction]
+      }
+
+      return diagnostic
+    } ?? []
 
     let report = RelatedFullDocumentDiagnosticReport(items: diagnostics)
     return (report, cachable: true)
