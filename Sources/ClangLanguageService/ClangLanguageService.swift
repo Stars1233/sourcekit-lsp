@@ -378,13 +378,18 @@ extension ClangLanguageService {
         workspaceFolders: nil
       )
     )
-    self.capabilities = result.capabilities
+    var capabilities = result.capabilities
     if let legend = result.capabilities.semanticTokensProvider?.legend {
+      // Semantic token responses from clangd are translated to SourceKit-LSP's legend below before being sent to the
+      // client, so dynamic registrations must advertise SourceKit-LSP's legend instead of the clangd one.
+      capabilities.semanticTokensProvider?.legend = .sourceKitLSPLegend
       self.semanticTokensTranslator = SemanticTokensLegendTranslator(
         clangdLegend: legend,
         sourceKitLSPLegend: SemanticTokensLegend.sourceKitLSPLegend
       )
     }
+    self.capabilities = capabilities
+
     if let sourceKitLSPServer {
       // Since `ClangLanguageService` is created per toolchain, different clangd
       // instances can report different capabilities. Calling `registerCapabilities`
@@ -392,7 +397,7 @@ extension ClangLanguageService {
       // earlier one. This is fine for now because SourceKitLSPServer more or less
       // ignores the registered capabilities for clangd at the moment.
       await sourceKitLSPServer.registerCapabilities(
-        for: result.capabilities,
+        for: capabilities,
         languages: [.c, .cpp, .objective_c, .objective_cpp],
         registry: workspace.capabilityRegistry
       )

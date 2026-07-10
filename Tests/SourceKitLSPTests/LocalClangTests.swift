@@ -303,6 +303,48 @@ final class LocalClangTests: SourceKitLSPTestCase {
     XCTAssertGreaterThanOrEqual(data.count, 0)
   }
 
+  func testSemanticTokensRegisterSourceKitLSPLegend() async throws {
+    let testClient = try await TestSourceKitLSPClient(
+      capabilities: ClientCapabilities(
+        textDocument: TextDocumentClientCapabilities(
+          semanticTokens: TextDocumentClientCapabilities.SemanticTokens(
+            dynamicRegistration: true,
+            requests: TextDocumentClientCapabilities.SemanticTokensRequestsClientCapabilities(
+              range: .bool(true),
+              full: .bool(true)
+            ),
+            tokenTypes: SemanticTokensLegend.sourceKitLSPLegend.tokenTypes,
+            tokenModifiers: SemanticTokensLegend.sourceKitLSPLegend.tokenModifiers,
+            formats: [.relative]
+          )
+        )
+      ),
+      usePullDiagnostics: false
+    )
+    let registeredSemanticTokens = expectation(description: "semantic tokens registered")
+    testClient.handleMultipleRequests { (request: RegisterCapabilityRequest) in
+      for registration in request.registrations where registration.method == SemanticTokensRegistrationOptions.method {
+        let options = SemanticTokensRegistrationOptions(fromLSPAny: registration.registerOptions)
+        XCTAssertEqual(options?.semanticTokenOptions.legend, .sourceKitLSPLegend)
+        registeredSemanticTokens.fulfill()
+      }
+      return VoidResponse()
+    }
+
+    let uri = DocumentURI(for: .objective_c)
+    testClient.openDocument(
+      """
+      @interface Foo
+      - (void)scriptingIsGreaterThan:(id)object;
+      @end
+      """,
+      uri: uri
+    )
+    _ = try await testClient.send(SynchronizeRequest())
+
+    try await fulfillmentOfOrThrow(registeredSemanticTokens)
+  }
+
   func testDocumentDependenciesUpdated() async throws {
     let project = try await MultiFileTestProject(
       files: [
