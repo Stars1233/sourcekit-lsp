@@ -1939,11 +1939,11 @@ final class CodeActionTests: SourceKitLSPTestCase {
       ],
       manifest: """
         let package = Package(
-        name: "MissingImport",
-        targets: [
+          name: "MissingImport",
+          targets: [
             .target(name: "MyLibrary"),
             .executableTarget(name: "MyApp", dependencies: ["MyLibrary"]),
-        ]
+          ]
         )
         """,
       capabilities: clientCapabilitiesWithCodeActionSupport,
@@ -2008,12 +2008,12 @@ final class CodeActionTests: SourceKitLSPTestCase {
       ],
       manifest: """
         let package = Package(
-        name: "MissingImport",
-        targets: [
+          name: "MissingImport",
+          targets: [
             .target(name: "LibA"),
             .target(name: "LibB"),
             .executableTarget(name: "MyApp", dependencies: ["LibA", "LibB"]),
-        ]
+          ]
         )
         """,
       capabilities: clientCapabilitiesWithCodeActionSupport,
