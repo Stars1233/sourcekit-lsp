@@ -10,20 +10,20 @@
 //
 //===----------------------------------------------------------------------===//
 
+@preconcurrency import IndexStoreDB
 @_spi(SourceKitLSP) import LanguageServerProtocol
 @_spi(SourceKitLSP) import LanguageServerProtocolExtensions
 @_spi(SourceKitLSP) import SKLogging
 import SKOptions
 import SKUtilities
+import SemanticIndex
 import SourceKitD
 import SourceKitLSP
 import SwiftDiagnostics
 import SwiftExtensions
 import SwiftParserDiagnostics
-@_spi(SourceKitLSP) import ToolsProtocolsSwiftExtensions
-@preconcurrency import IndexStoreDB
-import SemanticIndex
 import SwiftSyntax
+@_spi(SourceKitLSP) import ToolsProtocolsSwiftExtensions
 
 import struct SourceKitLSP.Diagnostic
 
@@ -157,56 +157,58 @@ actor DiagnosticReportManager {
 
     let rawDiagnostics: SKDResponseArray? = dict[keys.diagnostics]
 
-    let hasMissingImportDiagnostic =
+    let missingImportDiagnosticIDsInResponse: [String] =
       rawDiagnostics?.compactMap { rawDiagnostic -> String? in
-      guard
-        let diagnosticID: String = rawDiagnostic[keys.id],
-        isMissingImportDiagnosticID(diagnosticID)
-      else {
-        return nil
-      }
+        guard let diagnosticID: String = rawDiagnostic[keys.id] else {
+          return nil
+        }
 
-      return diagnosticID
-    }.isEmpty == false
+        return missingImportDiagnosticIDs.contains(diagnosticID) ? diagnosticID : nil
+      } ?? []
 
-    let missingImportContext: MissingImportCodeActionContext?
+    let hasMissingImportDiagnostic = !missingImportDiagnosticIDsInResponse.isEmpty
+
+    let checkedIndex: CheckedIndex?
+    let syntaxTree: SourceFileSyntax?
     if hasMissingImportDiagnostic, let uncheckedIndex {
-      let syntaxTree = await syntaxTreeManager.syntaxTree(for: snapshot)
-        missingImportContext = MissingImportCodeActionContext(
-            index: uncheckedIndex.checked(for: .deletedFiles),
-            existingImports: syntaxTree.statements.compactMap { $0.item.as(ImportDeclSyntax.self) }
-        )
+      checkedIndex = uncheckedIndex.checked(for: .deletedFiles)
+      syntaxTree = await syntaxTreeManager.syntaxTree(for: snapshot)
     } else {
-        missingImportContext = nil
+      checkedIndex = nil
+      syntaxTree = nil
     }
 
     let diagnostics: [Diagnostic] =
       rawDiagnostics?.compactMap { rawDiagnostic in
-      guard var diagnostic = Diagnostic(
-        rawDiagnostic,
-        in: snapshot,
-        documentManager: documentManager,
-        useEducationalNoteAsCode: self.clientHasDiagnosticsCodeDescriptionSupport
-      ) else {
-        return nil
-      }
+        guard
+          var diagnostic = Diagnostic(
+            rawDiagnostic,
+            in: snapshot,
+            documentManager: documentManager,
+            useEducationalNoteAsCode: self.clientHasDiagnosticsCodeDescriptionSupport
+          )
+        else {
+          return nil
+        }
 
-      if let diagnosticID: String = rawDiagnostic[keys.id],
-        isMissingImportDiagnosticID(diagnosticID),
-        let diagnosticDescription: String = rawDiagnostic[keys.description],
-        let missingSymbol = missingSymbolName(from: diagnosticDescription),
-        let missingImportContext,
-        let codeAction = try? missingImportCodeAction(
-          for: missingSymbol,
-          context: missingImportContext,
-          snapshot: snapshot
-        )
-      {
-        diagnostic.codeActions = (diagnostic.codeActions ?? []) + [codeAction]
-      }
+        if let diagnosticID: String = rawDiagnostic[keys.id],
+          missingImportDiagnosticIDs.contains(diagnosticID),
+          let diagnosticDescription: String = rawDiagnostic[keys.description],
+          let missingSymbol = missingSymbolName(from: diagnosticDescription),
+          let checkedIndex,
+          let syntaxTree,
+          let codeAction = try? missingImportCodeAction(
+            for: missingSymbol,
+            index: checkedIndex,
+            syntaxTree: syntaxTree,
+            snapshot: snapshot
+          )
+        {
+          diagnostic.codeActions = (diagnostic.codeActions ?? []) + [codeAction]
+        }
 
-      return diagnostic
-    } ?? []
+        return diagnostic
+      } ?? []
 
     let report = RelatedFullDocumentDiagnosticReport(items: diagnostics)
     return (report, cachable: true)
@@ -249,5 +251,87 @@ actor DiagnosticReportManager {
     // Remove any reportTasks for old versions of this document.
     reportTaskCache.removeAll(where: { $0.snapshotID <= snapshotID })
     reportTaskCache[CacheKey(snapshotID: snapshotID, buildSettings: buildSettings)] = reportTask
+  }
+
+  private let missingImportDiagnosticIDs: Set<String> = [
+    "cannot_find_type_in_scope",
+    "cannot_find_in_scope",
+    "use_of_unresolved_identifier",
+  ]
+
+  private func missingSymbolName(from diagnosticDescription: String) -> String? {
+    let components = diagnosticDescription.split(separator: "'", omittingEmptySubsequences: false)
+    guard components.count >= 3 else {
+      return nil
+    }
+
+    let symbolName = String(components[1])
+    return symbolName.isEmpty ? nil : symbolName
+  }
+
+  private func missingImportCodeAction(
+    for symbolName: String,
+    index: CheckedIndex,
+    syntaxTree: SourceFileSyntax,
+    snapshot: DocumentSnapshot
+  ) throws -> CodeAction? {
+    guard let moduleName = try uniqueModuleProvidingSymbol(named: symbolName, using: index) else {
+      return nil
+    }
+
+    let existingImports = syntaxTree.statements.compactMap { $0.item.as(ImportDeclSyntax.self) }
+    let edit = addImportEdit(
+      moduleName,
+      existingImports: existingImports,
+      snapshot: snapshot
+    )
+
+    return CodeAction(
+      title: "Add import for '\(moduleName)'",
+      kind: .quickFix,
+      diagnostics: nil,
+      edit: WorkspaceEdit(changes: [snapshot.uri: [edit]])
+    )
+  }
+
+  private func uniqueModuleProvidingSymbol(named symbolName: String, using index: CheckedIndex) throws -> String? {
+    var moduleNames = Set<String>()
+
+    try index.forEachCanonicalSymbolOccurrence(byName: symbolName) { occurrence in
+      guard occurrence.roles.contains(.definition) || occurrence.roles.contains(.declaration) else {
+        return true
+      }
+
+      let moduleName = occurrence.location.moduleName
+      guard !moduleName.isEmpty else {
+        return true
+      }
+
+      moduleNames.insert(moduleName)
+
+      return moduleNames.count <= 1
+    }
+
+    return moduleNames.only
+  }
+
+  private func addImportEdit(
+    _ moduleName: String,
+    existingImports: [ImportDeclSyntax],
+    snapshot: DocumentSnapshot
+  ) -> TextEdit {
+    if let lastImport = existingImports.last {
+      let insertionPosition = snapshot.position(of: lastImport.endPosition)
+      return TextEdit(
+        range: insertionPosition..<insertionPosition,
+        newText: "\nimport \(moduleName)"
+      )
+    }
+
+    let startOfFile = Position(line: 0, utf16index: 0)
+    return TextEdit(
+      range: startOfFile..<startOfFile,
+      newText: "import \(moduleName)\n\n"
+    )
   }
 }

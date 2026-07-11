@@ -1,7 +1,6 @@
 add_library(SwiftLanguageService STATIC
   AdjustPositionToStartOfArgument.swift
   AdjustPositionToStartOfIdentifier.swift
-  AddMissingImport.swift
   ClosureCompletionFormat.swift
   CodeCompletion.swift
   CodeCompletionContext.swift
