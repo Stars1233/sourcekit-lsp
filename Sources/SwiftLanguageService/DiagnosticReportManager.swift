@@ -157,16 +157,14 @@ actor DiagnosticReportManager {
 
     let rawDiagnostics: SKDResponseArray? = dict[keys.diagnostics]
 
-    let missingImportDiagnosticIDsInResponse: [String] =
+    let hasMissingImportDiagnostic =
       rawDiagnostics?.compactMap { rawDiagnostic -> String? in
         guard let diagnosticID: String = rawDiagnostic[keys.id] else {
           return nil
         }
 
         return missingImportDiagnosticIDs.contains(diagnosticID) ? diagnosticID : nil
-      } ?? []
-
-    let hasMissingImportDiagnostic = !missingImportDiagnosticIDsInResponse.isEmpty
+      }.isEmpty == false
 
     let checkedIndex: CheckedIndex?
     let syntaxTree: SourceFileSyntax?
@@ -261,7 +259,7 @@ actor DiagnosticReportManager {
 
   private func missingSymbolName(from diagnosticDescription: String) -> String? {
     let components = diagnosticDescription.split(separator: "'", omittingEmptySubsequences: false)
-    guard components.count >= 3 else {
+    guard components.count == 3 else {
       return nil
     }
 
@@ -275,16 +273,25 @@ actor DiagnosticReportManager {
     syntaxTree: SourceFileSyntax,
     snapshot: DocumentSnapshot
   ) throws -> CodeAction? {
-    guard let moduleName = try uniqueModuleProvidingSymbol(named: symbolName, using: index) else {
+    guard let moduleName = try index.uniqueModuleProvidingSymbol(named: symbolName) else {
       return nil
     }
 
     let existingImports = syntaxTree.statements.compactMap { $0.item.as(ImportDeclSyntax.self) }
-    let edit = addImportEdit(
-      moduleName,
-      existingImports: existingImports,
-      snapshot: snapshot
-    )
+    let edit: TextEdit
+    if let lastImport = existingImports.last {
+      let insertionPosition = snapshot.position(of: lastImport.endPosition)
+      edit = TextEdit(
+        range: insertionPosition..<insertionPosition,
+        newText: "\nimport \(moduleName)"
+      )
+    } else {
+      let startOfFile = Position(line: 0, utf16index: 0)
+      edit = TextEdit(
+        range: startOfFile..<startOfFile,
+        newText: "import \(moduleName)\n\n"
+      )
+    }
 
     return CodeAction(
       title: "Add import for '\(moduleName)'",
@@ -293,45 +300,31 @@ actor DiagnosticReportManager {
       edit: WorkspaceEdit(changes: [snapshot.uri: [edit]])
     )
   }
+}
 
-  private func uniqueModuleProvidingSymbol(named symbolName: String, using index: CheckedIndex) throws -> String? {
-    var moduleNames = Set<String>()
+fileprivate extension CheckedIndex {
+  func uniqueModuleProvidingSymbol(named symbolName: String) throws -> String? {
+    var moduleName: String?
 
-    try index.forEachCanonicalSymbolOccurrence(byName: symbolName) { occurrence in
+    try forEachCanonicalSymbolOccurrence(byName: symbolName) { occurrence in
       guard occurrence.roles.contains(.definition) || occurrence.roles.contains(.declaration) else {
         return true
       }
 
-      let moduleName = occurrence.location.moduleName
-      guard !moduleName.isEmpty else {
+      let occurrenceModuleName = occurrence.location.moduleName
+      guard !occurrenceModuleName.isEmpty else {
         return true
       }
 
-      moduleNames.insert(moduleName)
+      guard moduleName == nil || moduleName == occurrenceModuleName else {
+        moduleName = nil
+        return false
+      }
 
-      return moduleNames.count <= 1
+      moduleName = occurrenceModuleName
+      return true
     }
 
-    return moduleNames.only
-  }
-
-  private func addImportEdit(
-    _ moduleName: String,
-    existingImports: [ImportDeclSyntax],
-    snapshot: DocumentSnapshot
-  ) -> TextEdit {
-    if let lastImport = existingImports.last {
-      let insertionPosition = snapshot.position(of: lastImport.endPosition)
-      return TextEdit(
-        range: insertionPosition..<insertionPosition,
-        newText: "\nimport \(moduleName)"
-      )
-    }
-
-    let startOfFile = Position(line: 0, utf16index: 0)
-    return TextEdit(
-      range: startOfFile..<startOfFile,
-      newText: "import \(moduleName)\n\n"
-    )
+    return moduleName
   }
 }
