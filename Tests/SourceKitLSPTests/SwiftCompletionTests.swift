@@ -293,6 +293,38 @@ final class SwiftCompletionTests: SourceKitLSPTestCase {
     XCTAssertEqual(abc.textEdit, .textEdit(TextEdit(range: positions["1️⃣"]..<positions["2️⃣"], newText: "foobar")))
   }
 
+  func testCompletionNoInsertReplaceEditAtEndOfIdentifierWithFollowingStatement() async throws {
+    try await SkipUnless.sourcekitdSupportsPlugin()
+
+    let testClient = try await TestSourceKitLSPClient(capabilities: insertReplaceEditCapabilities)
+    let uri = DocumentURI(for: .swift)
+    let positions = testClient.openDocument(
+      """
+      struct Foo {
+        let bar: Int
+      }
+
+      func test() {
+        let x = Foo(bar: 1)
+        x.1️⃣ba2️⃣
+        print("abc")
+      }
+      """,
+      uri: uri
+    )
+
+    let completions = try await testClient.send(
+      CompletionRequest(textDocument: TextDocumentIdentifier(uri), position: positions["2️⃣"])
+    )
+
+    guard let bar = completions.items.first(where: { $0.label == "bar" }) else {
+      XCTFail("No completion item with label 'bar'")
+      return
+    }
+
+    XCTAssertEqual(bar.textEdit, .textEdit(TextEdit(range: positions["1️⃣"]..<positions["2️⃣"], newText: "bar")))
+  }
+
   func testCompletionNoSnippetSupport() async throws {
     try await SkipUnless.sourcekitdSupportsPlugin()
 

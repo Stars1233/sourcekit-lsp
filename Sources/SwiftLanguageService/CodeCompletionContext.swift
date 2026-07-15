@@ -40,9 +40,10 @@ private func findEndOfIdentifier(
   snapshot: DocumentSnapshot,
   tree: SourceFileSyntax
 ) -> Position? {
-  let token = tree.token(at: snapshot.absolutePosition(of: position))
+  let absolutePosition = snapshot.absolutePosition(of: position)
+  let token = tree.token(at: absolutePosition)
 
-  guard let token, token.isIdentifierOrKeyword else {
+  guard let token, token.isIdentifierOrKeyword, token.trimmedRange.contains(absolutePosition) else {
     return nil
   }
 
