@@ -304,19 +304,12 @@ actor DiagnosticReportManager {
   private func uncheckedIndex(timeout: Duration) async -> UncheckedIndex? {
     let uncheckedIndexProvider = self.uncheckedIndexProvider
 
-    return await withTaskGroup(of: UncheckedIndex?.self) { group in
-      group.addTask {
+    do {
+     return try await withTimeout(timeout) {
         await uncheckedIndexProvider()
-      }
-
-      group.addTask {
-        try? await Task.sleep(for: timeout)
+     }
+    } catch {
         return nil
-      }
-
-      let result = await group.next() ?? nil
-      group.cancelAll()
-      return result
     }
   }
 }
