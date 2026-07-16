@@ -296,7 +296,7 @@ package actor SwiftLanguageService: LanguageService, Sendable {
       syntaxTreeManager: syntaxTreeManager,
       documentManager: sourceKitLSPServer.documentManager,
       clientHasDiagnosticsCodeDescriptionSupport: await capabilityRegistry.clientHasDiagnosticsCodeDescriptionSupport,
-      uncheckedIndex: await workspace.uncheckedIndex
+      uncheckedIndexProvider: { await workspace.uncheckedIndex }
     )
 
     self.macroExpansionManager = MacroExpansionManager(swiftLanguageService: self)

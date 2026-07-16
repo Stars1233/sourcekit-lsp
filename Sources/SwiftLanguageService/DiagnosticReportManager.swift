@@ -43,7 +43,7 @@ actor DiagnosticReportManager {
   private let syntaxTreeManager: SyntaxTreeManager
   private let documentManager: DocumentManager
   private let clientHasDiagnosticsCodeDescriptionSupport: Bool
-  private let uncheckedIndex: UncheckedIndex?
+  private let uncheckedIndexProvider: @Sendable () async -> UncheckedIndex?
 
   private nonisolated var keys: sourcekitd_api_keys { return sourcekitd.keys }
   private nonisolated var requests: sourcekitd_api_requests { return sourcekitd.requests }
@@ -59,14 +59,14 @@ actor DiagnosticReportManager {
     syntaxTreeManager: SyntaxTreeManager,
     documentManager: DocumentManager,
     clientHasDiagnosticsCodeDescriptionSupport: Bool,
-    uncheckedIndex: UncheckedIndex?
+    uncheckedIndexProvider: @escaping @Sendable () async -> UncheckedIndex?
   ) {
     self.sourcekitd = sourcekitd
     self.options = options
     self.syntaxTreeManager = syntaxTreeManager
     self.documentManager = documentManager
     self.clientHasDiagnosticsCodeDescriptionSupport = clientHasDiagnosticsCodeDescriptionSupport
-    self.uncheckedIndex = uncheckedIndex
+    self.uncheckedIndexProvider = uncheckedIndexProvider
   }
 
   func diagnosticReport(
@@ -168,7 +168,7 @@ actor DiagnosticReportManager {
 
     let checkedIndex: CheckedIndex?
     let syntaxTree: SourceFileSyntax?
-    if hasMissingImportDiagnostic, let uncheckedIndex {
+    if hasMissingImportDiagnostic, let uncheckedIndex = await uncheckedIndex(timeout: .milliseconds(500)) {
       checkedIndex = uncheckedIndex.checked(for: .deletedFiles)
       syntaxTree = await syntaxTreeManager.syntaxTree(for: snapshot)
     } else {
@@ -299,6 +299,25 @@ actor DiagnosticReportManager {
       diagnostics: nil,
       edit: WorkspaceEdit(changes: [snapshot.uri: [edit]])
     )
+  }
+
+  private func uncheckedIndex(timeout: Duration) async -> UncheckedIndex? {
+    let uncheckedIndexProvider = self.uncheckedIndexProvider
+
+    return await withTaskGroup(of: UncheckedIndex?.self) { group in
+      group.addTask {
+        await uncheckedIndexProvider()
+      }
+
+      group.addTask {
+        try? await Task.sleep(for: timeout)
+        return nil
+      }
+
+      let result = await group.next() ?? nil
+      group.cancelAll()
+      return result
+    }
   }
 }
 
