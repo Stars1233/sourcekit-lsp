@@ -305,11 +305,11 @@ actor DiagnosticReportManager {
     let uncheckedIndexProvider = self.uncheckedIndexProvider
 
     do {
-     return try await withTimeout(timeout) {
+      return try await withTimeout(timeout) {
         await uncheckedIndexProvider()
-     }
+      }
     } catch {
-        return nil
+      return nil
     }
   }
 }
