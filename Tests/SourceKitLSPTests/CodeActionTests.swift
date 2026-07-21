@@ -1925,6 +1925,189 @@ final class CodeActionTests: SourceKitLSPTestCase {
     }
   }
 
+  func testAddMissingImport() async throws {
+    let project = try await SwiftPMTestProject(
+      files: [
+        "MyLibrary/ImportedType.swift": """
+        public struct ImportedType {
+        public init() {}
+        }
+        """,
+        "MyApp/main.swift": """
+        let value = 1️⃣ImportedType()
+        """,
+      ],
+      manifest: """
+        let package = Package(
+          name: "MissingImport",
+          targets: [
+            .target(name: "MyLibrary"),
+            .executableTarget(name: "MyApp", dependencies: ["MyLibrary"]),
+          ]
+        )
+        """,
+      capabilities: clientCapabilitiesWithCodeActionSupport,
+      enableBackgroundIndexing: true
+    )
+
+    let (uri, positions) = try project.openDocument("main.swift")
+
+    let diagnosticReport = try await project.testClient.send(
+      DocumentDiagnosticsRequest(textDocument: TextDocumentIdentifier(uri))
+    )
+
+    let diagnostics = try XCTUnwrap(diagnosticReport.fullReport?.items)
+
+    let result = try await project.testClient.send(
+      CodeActionRequest(
+        range: Range(positions["1️⃣"]),
+        context: CodeActionContext(
+          diagnostics: diagnostics,
+          only: [.quickFix],
+          triggerKind: .invoked
+        ),
+        textDocument: TextDocumentIdentifier(uri)
+      )
+    )
+
+    let codeActions = try XCTUnwrap(result?.codeActions)
+    let actionTitles = codeActions.map(\.title)
+    let addImportAction = try XCTUnwrap(
+      codeActions.first { $0.title == "Add import for 'MyLibrary'" },
+      "Expected Add import for 'MyLibrary' action. Available actions: \(actionTitles). Diagnostics: \(diagnostics.map { "\($0.source ?? "nil"): \($0.message)" })"
+    )
+
+    XCTAssertEqual(addImportAction.kind, .quickFix)
+    XCTAssertEqual(
+      addImportAction.edit?.changes?[uri],
+      [
+        TextEdit(
+          range: Position(line: 0, utf16index: 0)..<Position(line: 0, utf16index: 0),
+          newText: "import MyLibrary\n\n"
+        )
+      ]
+    )
+  }
+
+  func testAddMissingImportNotAvailableForAmbiguousSymbol() async throws {
+    let project = try await SwiftPMTestProject(
+      files: [
+        "LibA/ImportedType.swift": """
+        public struct ImportedType {
+        public init() {}
+        }
+        """,
+        "LibB/ImportedType.swift": """
+        public struct ImportedType {
+        public init() {}
+        }
+        """,
+        "MyApp/main.swift": """
+        let value = 1️⃣ImportedType()
+        """,
+      ],
+      manifest: """
+        let package = Package(
+          name: "MissingImport",
+          targets: [
+            .target(name: "LibA"),
+            .target(name: "LibB"),
+            .executableTarget(name: "MyApp", dependencies: ["LibA", "LibB"]),
+          ]
+        )
+        """,
+      capabilities: clientCapabilitiesWithCodeActionSupport,
+      enableBackgroundIndexing: true
+    )
+
+    let (uri, positions) = try project.openDocument("main.swift")
+
+    let diagnosticReport = try await project.testClient.send(
+      DocumentDiagnosticsRequest(textDocument: TextDocumentIdentifier(uri))
+    )
+
+    let diagnostics = try XCTUnwrap(diagnosticReport.fullReport?.items)
+
+    let result = try await project.testClient.send(
+      CodeActionRequest(
+        range: Range(positions["1️⃣"]),
+        context: CodeActionContext(
+          diagnostics: diagnostics,
+          only: [.quickFix],
+          triggerKind: .invoked
+        ),
+        textDocument: TextDocumentIdentifier(uri)
+      )
+    )
+
+    let codeActions = try XCTUnwrap(result?.codeActions)
+    XCTAssertFalse(codeActions.contains { $0.title.hasPrefix("Add import for ") })
+  }
+
+  func testAddMissingImportInsertsAtStartOfFileBeforeDocComment() async throws {
+    let project = try await SwiftPMTestProject(
+      files: [
+        "MyLibrary/ImportedType.swift": """
+        public struct ImportedType {
+          public init() {}
+        }
+        """,
+        "MyApp/main.swift": """
+        /// Do an amazing thing
+        struct Starstruck {
+          let value = 1️⃣ImportedType()
+        }
+        """,
+      ],
+      manifest: """
+        let package = Package(
+          name: "MissingImport",
+          targets: [
+            .target(name: "MyLibrary"),
+            .executableTarget(name: "MyApp", dependencies: ["MyLibrary"]),
+          ]
+        )
+        """,
+      capabilities: clientCapabilitiesWithCodeActionSupport,
+      enableBackgroundIndexing: true
+    )
+
+    let (uri, positions) = try project.openDocument("main.swift")
+
+    let diagnosticReport = try await project.testClient.send(
+      DocumentDiagnosticsRequest(textDocument: TextDocumentIdentifier(uri))
+    )
+    let diagnostics = try XCTUnwrap(diagnosticReport.fullReport?.items)
+
+    let result = try await project.testClient.send(
+      CodeActionRequest(
+        range: Range(positions["1️⃣"]),
+        context: CodeActionContext(
+          diagnostics: diagnostics,
+          only: [.quickFix],
+          triggerKind: .invoked
+        ),
+        textDocument: TextDocumentIdentifier(uri)
+      )
+    )
+
+    let codeActions = try XCTUnwrap(result?.codeActions)
+    let addImportAction = try XCTUnwrap(
+      codeActions.first { $0.title == "Add import for 'MyLibrary'" },
+      "Expected Add import for 'MyLibrary' action. Available actions: \(codeActions.map(\.title))"
+    )
+
+    XCTAssertEqual(
+      addImportAction.edit?.changes?[uri],
+      [
+        TextEdit(
+          range: Position(line: 0, utf16index: 0)..<Position(line: 0, utf16index: 0),
+          newText: "import MyLibrary\n\n"
+        )
+      ]
+    )
+  }
+
   func testRemoveUnusedImports() async throws {
     let project = try await SwiftPMTestProject(
       files: [
