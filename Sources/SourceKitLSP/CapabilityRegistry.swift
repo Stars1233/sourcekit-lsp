@@ -126,6 +126,9 @@ package final actor CapabilityRegistry {
 
   package nonisolated var clientHasWorkspaceGetReferenceDocumentSupport: Bool {
     return clientHasExperimentalCapability(GetReferenceDocumentRequest.method)
+      || MessageRegistry.lspLegacyNames[GetReferenceDocumentRequest.method].map {
+        clientHasExperimentalCapability($0)
+      } ?? false
   }
 
   /// Whether the client supports `workspaceSymbol/resolve` for lazy location resolution.
