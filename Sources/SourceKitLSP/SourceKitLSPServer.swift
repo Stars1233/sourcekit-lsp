@@ -842,7 +842,12 @@ extension SourceKitLSPServer {
         DidChangeActiveDocumentNotification.method,
       ]
       for capabilityName in experimentalClientCapabilities {
-        guard let experimentalCapability = initializationOptions[capabilityName] else {
+        // Some clients still pass these under their legacy method names, so accept
+        // either the current name or the legacy name from `initializationOptions`.
+        let experimentalCapability =
+          initializationOptions[capabilityName]
+          ?? MessageRegistry.lspLegacyNames[capabilityName].flatMap { initializationOptions[$0] }
+        guard let experimentalCapability else {
           continue
         }
         var experimentalCapabilities: [String: LSPAny] =
